@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pet segmentation</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main>
+    <header><p class="eyebrow">OXFORD-IIIT PET · IMAGE SEGMENTATION</p>
+      <h1>Find your pet in the picture.</h1>
+      <p>Upload a cat or dog photo to highlight your pet and create a binary mask.</p>
+    </header>
+    <section class="upload" aria-labelledby="upload-title">
+      <h2 id="upload-title">Choose a photo</h2>
+      <form action="{{ url_for('segment') }}" method="post" enctype="multipart/form-data">
+        <label for="image">Photo</label>
+        <input id="image" name="image" type="file" accept="image/jpeg,image/png,image/webp" required aria-describedby="limits">
+        <p id="limits" class="muted">JPEG, PNG, or WebP · Still images up to 8 megapixels · Upload below 10 MiB</p>
+        <button type="submit">Segment photo</button>
+        <p class="muted">Processing may take a few seconds. Results appear below.</p>
+      </form>
+    </section>
+    {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+    {% if mask %}
+    <section aria-labelledby="results-title">
+      <h2 id="results-title">Your result</h2>
+      <p>Green highlights the predicted pet. In the mask, white is pet and black is background.</p>
+      <div class="results">
+        <figure><img src="{{ original }}" alt="Uploaded photo"><figcaption>Original</figcaption></figure>
+        <figure><img src="{{ overlay }}" alt="Photo with predicted pet highlighted green"><figcaption>Pet overlay</figcaption></figure>
+        <figure><img src="{{ mask }}" alt="Binary segmentation mask"><figcaption>Binary mask</figcaption></figure>
+      </div>
+      <a class="download" href="{{ mask }}" download="prediction_mask.png">Download mask PNG</a>
+    </section>
+    {% endif %}
+    <footer>Oxford-IIIT Pet segmentation assignment · Photos are not saved to an application gallery.</footer>
+  </main>
+</body>
+</html>
