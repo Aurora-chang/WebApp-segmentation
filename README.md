@@ -6,36 +6,72 @@ PNG mask. It runs one CPU model in one Waitress process, with two HTTP threads a
 two PyTorch compute threads. A lock admits only one photo-processing request at a
 time; another receives a friendly busy response. No JavaScript or build step is needed.
 
+## Verified deployment
+
+Repository: https://github.com/Aurora-chang/WebApp-segmentation
+
+The deployment owner verified the following on the actual VM:
+
+| Component | Deployed configuration |
+|---|---|
+| Host | `aurora-vm`, Debian Linux |
+| Python | **3.13.5** |
+| Resources | 2 CPU cores, approximately 3.8 GB RAM; CPU-only inference |
+| Virtual environment | `/home/aurora/WebApp-segmentation/.venv` |
+| Trained checkpoint | `/home/aurora/gpu-jobs/j20260914150037g15y/best.pt` |
+| Checkpoint input size | **256 × 256** |
+| Server | Waitress, port 8000 |
+| systemd service | `pet-segmentation-webapp.service` |
+| HTTPS access | https://aurora-vm.monster-frog.ts.net (**tailnet-only**) |
+
+The trained checkpoint loaded successfully on CPU. Real cat and dog uploads
+produced segmentation results. Invalid/non-image uploads displayed readable errors
+without crashing the application. The application remained running after SSH
+disconnected. These are functional deployment checks, not a new accuracy benchmark.
+
 ## Install on aurora-vm
 
-Use Python 3.10–3.12 (3.12 was used for local checks), with `venv` available.
-From the repository directory on the VM:
+Python **3.13.5 is verified on Debian**; Python 3.12 was used for local macOS tests.
+Use Python 3.13 with `venv` support to reproduce the VM setup. The commands below
+are for a fresh installation; the working VM already has its virtual environment.
+
+If the repository is not already present:
 
 ```bash
-cd ~/WebApp-segmentation
-python3 -m venv .venv
+git clone https://github.com/Aurora-chang/WebApp-segmentation.git /home/aurora/WebApp-segmentation
+```
+
+Install into the virtual environment:
+
+```bash
+cd /home/aurora/WebApp-segmentation
+python3.13 --version
+python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu
 python -m pip install -r requirements.txt
 python -m pip check
+python -c 'import torch, torchvision; print(torch.__version__, torchvision.__version__); assert torch.version.cuda is None, "Expected a CPU-only build"'
 ```
 
-Adjust the `cd` path if your checkout lives elsewhere. Installing the CPU wheels
-first keeps the manifest installation from fetching CUDA packages on Linux.
+Installing the CPU wheels first keeps the manifest installation from fetching CUDA
+packages on Linux. Do not start with only `pip install -r requirements.txt` in a
+fresh Linux environment: the manifest alone does not select CPU builds.
 The matching versions and CPU index follow the [PyTorch installation matrix](https://pytorch.org/get-started/previous-versions/).
 For local macOS development, use `python -m pip install -r requirements.txt` directly
 inside the virtual environment; omit the Linux CPU-index command.
 
 ## Provide the trained checkpoint
 
-Keep your trained `best.pt` outside this checkout, for example at
-`/home/aurora/models/pet-segmentation/best.pt`. Copy the artifact from your completed
-training job to that location yourself when preparing the VM. Do not add weights
-to GitHub. `.gitignore` excludes `*.pt`, `*.pth`, `*.ckpt`, and `checkpoints/` as well.
+The deployed trained checkpoint is outside the checkout at
+`/home/aurora/gpu-jobs/j20260914150037g15y/best.pt`. Keep it there and readable by
+the service user `aurora`. A fresh deployment needs this artifact transferred
+separately; cloning the repository does not supply weights. Do not add weights
+to GitHub. `.gitignore` excludes `*.pt`, `*.pth`, `*.ckpt`, and `checkpoints/`.
 
 ```bash
-export PET_CHECKPOINT=/home/aurora/models/pet-segmentation/best.pt
+export PET_CHECKPOINT=/home/aurora/gpu-jobs/j20260914150037g15y/best.pt
 ```
 
 The application loads the checkpoint **once at startup**, using
@@ -48,44 +84,95 @@ The checkpoint must contain the training dictionary, including `model` and
 `config.size`. Missing, corrupt, or incompatible checkpoints stop startup with a
 clear error. This small-VM implementation accepts integer sizes from 64 to 512;
 it fails explicitly for other sizes instead of substituting a resolution. Training
-defaults to 256, but **the actual checkpoint value is always used**.
+defaults to 256, and the deployed checkpoint confirms size 256, but **the actual
+checkpoint value is always used**.
 
-The trained checkpoint and its `environment.json` are not present locally. The
-dependency versions here are the webapp environment, not a claim about the original
-training environment. Real checkpoint compatibility and segmentation quality must
-be checked when that artifact is available.
+`PET_CHECKPOINT` may point to another compatible checkpoint. Alternatively, pass
+`--checkpoint /absolute/path/to/best.pt`, which overrides the environment variable.
+The dependency manifest describes the webapp environment, not the original training
+environment; exact installed VM package versions can be inspected with
+`.venv/bin/python -m pip freeze`.
 
-## Start the server
+## Run with systemd
 
-Recommended command on aurora-vm, after installation and placing the checkpoint:
+The deployed application is managed by `pet-segmentation-webapp.service`. To
+reproduce it, create `/etc/systemd/system/pet-segmentation-webapp.service` with
+`sudoedit` and the following minimal unit. This is a reproduction template using
+the verified paths, not a captured copy of the existing VM unit:
 
-```bash
-PET_CHECKPOINT=/home/aurora/models/pet-segmentation/best.pt .venv/bin/python app.py --host 0.0.0.0 --port 8000
+```ini
+[Unit]
+Description=Pet segmentation web application
+After=network.target
+
+[Service]
+Type=simple
+User=aurora
+WorkingDirectory=/home/aurora/WebApp-segmentation
+Environment=PET_CHECKPOINT=/home/aurora/gpu-jobs/j20260914150037g15y/best.pt
+ExecStart=/home/aurora/WebApp-segmentation/.venv/bin/python /home/aurora/WebApp-segmentation/app.py --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-Alternatively, supply `--checkpoint /absolute/path/to/best.pt`; it overrides the
-environment variable. The default host is `127.0.0.1` for local-only use. Waitress
-runs without Flask's debug mode or reloader, so startup does not load two models.
-Stop with Ctrl+C. No system service or Tailscale configuration is included.
-
-### Access from another machine
-
-With the server bound to `0.0.0.0`, open `http://<VM-IP>:8000` in your browser.
-Use the VM's reachable address (not `0.0.0.0`). This requires an existing network
-route and permission for inbound TCP port 8000; this project changes neither.
-The app has no authentication or TLS, so use it on your private assignment network.
-
-If SSH is your available route, start the server on its default loopback address:
+Enable and start the service, then inspect status and logs:
 
 ```bash
-PET_CHECKPOINT=/home/aurora/models/pet-segmentation/best.pt .venv/bin/python app.py
+sudo systemctl daemon-reload
+sudo systemctl enable --now pet-segmentation-webapp.service
+sudo systemctl status pet-segmentation-webapp.service --no-pager
+sudo journalctl -u pet-segmentation-webapp.service -n 50 --no-pager
+curl -I http://127.0.0.1:8000
 ```
 
-Then run this on the other machine and open `http://127.0.0.1:8000` there:
+After changing an existing unit, run `daemon-reload` followed by
+`sudo systemctl restart pet-segmentation-webapp.service`. Inspect the installed
+unit with `sudo systemctl cat pet-segmentation-webapp.service` before editing it.
+systemd manages the process independently of SSH; enabling the unit also starts
+it at boot. See the [systemd service reference](https://www.freedesktop.org/software/systemd/man/systemd.service.html).
+
+For foreground troubleshooting when the service is stopped, run:
 
 ```bash
-ssh -N -L 8000:127.0.0.1:8000 aurora@<VM-IP>
+cd /home/aurora/WebApp-segmentation
+PET_CHECKPOINT=/home/aurora/gpu-jobs/j20260914150037g15y/best.pt .venv/bin/python app.py --host 127.0.0.1 --port 8000
 ```
+
+Do not run this alongside the service on the same port. Waitress runs without
+Flask's debug mode or reloader and loads one model per process.
+
+## Tailscale Serve and remote access
+
+Verified final URL: **https://aurora-vm.monster-frog.ts.net**
+
+```text
+Browser on the tailnet
+  -> https://aurora-vm.monster-frog.ts.net
+  -> Tailscale Serve
+  -> http://127.0.0.1:8000 (Waitress / Flask)
+  -> shared CPU inference
+```
+
+On a VM already connected to the intended tailnet, with the application running,
+configure background HTTPS proxying:
+
+```bash
+sudo tailscale serve --bg http://127.0.0.1:8000
+sudo tailscale serve status
+```
+
+Follow any HTTPS-enablement prompt if this is the first Serve setup on the tailnet.
+The `--bg` setting persists beyond the command's shell session. See the
+[Tailscale Serve reference](https://tailscale.com/docs/reference/tailscale-cli/serve).
+
+The URL is **tailnet-only**, not a public internet endpoint. Open it from a device
+connected to the tailnet and permitted by its access policy. Tailscale supplies
+HTTPS; Waitress serves local HTTP. This setup uses Serve, not Funnel, and does not
+require exposing VM port 8000 publicly. A different tailnet or machine name will
+produce a different HTTPS hostname.
 
 ## Exact training/inference contract
 
@@ -130,8 +217,11 @@ retain original decoded dimensions and orientation.
   spool request data to temporary files; responses embed re-encoded images directly
   and use `Cache-Control: no-store`.
 - One model/process and one active prediction bound RAM usage. Do not add multiple
-  worker processes on the 2-core, 3.8-GB VM. Actual VM latency/RAM remain to be measured
-  with the trained checkpoint and representative photos.
+  worker processes on the 2-core, 3.8-GB VM. Functional CPU deployment is verified;
+  no quantitative latency or peak-RAM benchmark is recorded here.
+- Checkpoints, virtual environments, Python/test caches, local logs, and runtime
+  upload/result directories are excluded by `.gitignore`. Service logs normally
+  go to the system journal, outside the repository.
 
 ## Tests and sanity checks
 

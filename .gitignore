@@ -9,3 +9,12 @@ __pycache__/
 *.ckpt
 checkpoints/
 uploads/
+results/
+outputs/
+*.log
+*.pid
+.cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
